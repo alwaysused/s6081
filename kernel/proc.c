@@ -130,6 +130,26 @@ found:
   return p;
 }
 
+//getproc
+int
+getproc(void)
+{
+  struct proc *p;
+  int num = 0;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED) {
+      num ++;
+    }
+      release(&p->lock);
+    }
+
+  return num;
+
+}
+
+
+
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -274,7 +294,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  np->mask = p->mask;
   np->parent = p;
 
   // copy saved user registers.

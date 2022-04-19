@@ -103,4 +103,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int mask; //mask
+};
+struct sysinfo{
+  uint64 freemem;   // amount of free memory (bytes)
+  uint64 nproc;     // number of process
 };
