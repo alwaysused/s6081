@@ -5,8 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
 struct cpu cpus[NCPU];
+extern pagetable_t kernel_pagetable;
 
 struct proc proc[NPROC];
 
@@ -34,12 +34,12 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+//      char *pa = kalloc();
+//      if(pa == 0)
+//        panic("kalloc");
+//      uint64 va = KSTACK((int) (p - proc));
+//      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+//      p->kstack = va;
   }
   kvminithart();
 }
@@ -121,6 +121,16 @@ found:
     return 0;
   }
 
+  p->kernel_pagetable = proc_kvminit();
+
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+ uint64 va = KSTACK((int)0);
+// mappages(p->kernel_pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W) ;
+ukvmmap(p->kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -129,7 +139,23 @@ found:
 
   return p;
 }
+void
+proc_freekernelpagetable(pagetable_t pagetable){
+  for (int i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V)) {
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpagetable((pagetable_t)child);
+          pagetable[i] = 0;
 
+      }
+    } else if (pte & PTE_V) {
+      panic("proc free kernelpagetable : leaf");
+    }
+  }
+  kfree((void*)pagetable);
+}
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -139,8 +165,21 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+    // 删除内核栈
+    if (p->kstack) {
+      // 通过页表地址， kstack虚拟地址 找到最后一级的页表项
+      pte_t* pte = walk(p->kernel_pagetable, p->kstack, 0);
+      if (pte == 0)
+        panic("freeproc : kstack");
+      // 删除页表项对应的物理地址
+      kfree((void*)PTE2PA(*pte));
+      p->kstack = 0;
+    }
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  proc_freekernelpagetable((void*)p->kernel_pagetable);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -195,6 +234,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
+
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
@@ -220,6 +260,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  kvmcopymappings(p->pagetable, p->kernel_pagetable, 0, p->sz); // 同步程序内存映射到进程内核页表中
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -242,12 +283,24 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+  uint64 old  = sz;
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    // 添加检测，防止程序大小超过 PLIC
+        if(sz >= PLIC) {
+          uvmdealloc(p->pagetable, sz, old);
+                    return -1;
+        }
+     if(kvmcopymappings(p->pagetable, p->kernel_pagetable, old, n) != 0) {
+          uvmdealloc(p->pagetable, sz, old);
+          return -1;
+        }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+  uvmdealloc(p->pagetable, old, old + n);
+
+    sz = kvmdealloc(p->kernel_pagetable, old, old + n);
   }
   p->sz = sz;
   return 0;
@@ -268,11 +321,12 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0|| kvmcopymappings(np->pagetable, np->kernel_pagetable, 0, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -460,6 +514,7 @@ scheduler(void)
   struct cpu *c = mycpu();
   
   c->proc = 0;
+
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
@@ -470,14 +525,20 @@ scheduler(void)
       if(p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
-        // before jumping back to us.
+        // before jumping back to us.//
+
+
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kernel_pagetable));
+                            sfence_vma();
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
-        c->proc = 0;
+        kvminithart();
+         c->proc = 0;
 
         found = 1;
       }

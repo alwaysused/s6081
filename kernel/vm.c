@@ -5,6 +5,9 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -46,6 +49,34 @@ kvminit()
   // the highest virtual address in the kernel.
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
+
+void
+ukvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("ukvmmap");
+}
+
+
+
+pagetable_t
+proc_kvminit() {
+  // 申请一个页表空间
+  pagetable_t proc_kernel_pagetable = (pagetable_t) kalloc();
+  if (proc_kernel_pagetable == 0)
+    return 0;
+  memset(proc_kernel_pagetable, 0, PGSIZE);
+  // 与vminint内容上保持一致
+  ukvmmap(proc_kernel_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  ukvmmap(proc_kernel_pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  //ukvmmap(proc_kernel_pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  ukvmmap(proc_kernel_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  ukvmmap(proc_kernel_pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  ukvmmap(proc_kernel_pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  ukvmmap(proc_kernel_pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return proc_kernel_pagetable;
+}
+
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
@@ -128,17 +159,20 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 uint64
 kvmpa(uint64 va)
 {
-  uint64 off = va % PGSIZE;
-  pte_t *pte;
-  uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
-  if(pte == 0)
-    panic("kvmpa");
-  if((*pte & PTE_V) == 0)
-    panic("kvmpa");
-  pa = PTE2PA(*pte);
-  return pa+off;
+   uint64 off = va % PGSIZE;
+   pte_t *pte;
+   uint64 pa;
+
+   // 使用用户进程自己的内核页表地址来翻译虚拟地址
+   struct proc *p = myproc();
+   pte = walk(p->kernel_pagetable, va, 0);
+
+   if(pte == 0)
+     panic("kvmpa");
+   if((*pte & PTE_V) == 0)
+     panic("kvmpa");
+   pa = PTE2PA(*pte);
+   return pa+off;
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -379,23 +413,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+    return copyin_new(pagetable, dst, srcva, len);
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -405,38 +424,79 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+     return copyinstr_new(pagetable, dst, srcva, max);
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+}
+void printvm(pagetable_t pagetable,int level){
+  if (level > 3){
+  return;}
+  for (int i = 0;i <= 511; i ++){
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V){
+      for (int j = 0;j < level- 1; j ++){
+        printf(".. ");
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
       }
-      --n;
-      --max;
-      p++;
-      dst++;
+      printf("..");
+               printf("%d: pte %p pa %p\n",i,pte, PTE2PA(pte));
+               printvm((pagetable_t)PTE2PA(pte),level + 1);
     }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
   }
 }
+void vmprint(pagetable_t page){
+printf("page table %p\n",page);
+printvm(page, 1);
+}
+
+// kernel/vm.c
+
+// 注：需要在 defs.h 中添加相应的函数声明，这里省略。
+
+// 将 src 页表的一部分页映射关系拷贝到 dst 页表中。
+// 只拷贝页表项，不拷贝实际的物理页内存。
+// 成功返回0，失败返回 -1
+int
+kvmcopymappings(pagetable_t src, pagetable_t dst, uint64 start, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  // PGROUNDUP: 对齐页边界，防止 remap
+  for(i = PGROUNDUP(start); i < start + sz; i += PGSIZE){
+    if((pte = walk(src, i, 0)) == 0) // 找到虚拟地址的最后一级页表项
+      panic("kvmcopymappings: pte should exist");
+    if((*pte & PTE_V) == 0)	// 判断页表项是否有效
+      panic("kvmcopymappings: page not present");
+    pa = PTE2PA(*pte);	 // 将页表项转换为物理地址页起始位置
+    // `& ~PTE_U` 表示将该页的权限设置为非用户页
+    // 必须设置该权限，RISC-V 中内核是无法直接访问用户页的。
+    flags = PTE_FLAGS(*pte) & ~PTE_U;
+    // 将pa这一页的PTEs映射到dst上同样的虚拟地址
+    if(mappages(dst, i, PGSIZE, pa, flags) != 0){
+      // 清除已经映射的部分，但不释放内存
+      //uvmunmap(dst, 0, i / PGSIZE, 0);
+      uvmunmap(dst, PGROUNDUP(start), (i - PGROUNDUP(start)) / PGSIZE, 0);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+// 与 uvmdealloc 功能类似，将程序内存从 oldsz 缩减到 newsz。但区别在于不释放实际内存
+// 用于内核页表内程序内存映射与用户页表程序内存映射之间的同步
+uint64
+kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    // 如果存在多余的页需要释放
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+  }
+
+  return newsz;
+}
+
