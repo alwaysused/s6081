@@ -33,6 +33,16 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+
+int uvmshouldtouch1(uint64 va) {
+  //pte_t *pte;
+  struct proc *p = myproc();
+
+  return va < p->sz // within size of memory for the process
+    && PGROUNDDOWN(va) != r_sp() // not accessing stack guard page (it shouldn't be mapped)
+    ; // page table entry does not exist
+}
+
 void
 usertrap(void)
 {
@@ -68,9 +78,28 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+  uint64 scause = r_scause();
+  uint64 va = r_stval();
+  if ((scause == 13||scause == 15) &&uvmshouldtouch1(va)){
+    uint64 oldsz = PGROUNDDOWN(va);
+
+       void* mem = kalloc();
+        if(mem == 0){
+                    p->killed= 1;
+
+        }
+        memset(mem, 0, PGSIZE);
+        if(mappages(p->pagetable, oldsz, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+          kfree(mem);
+         p->killed = 1;
+        }
+
+  }else{
+            printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+            printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+            p->killed = 1;
+  }
+
   }
 
   if(p->killed)
