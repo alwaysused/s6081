@@ -33,6 +33,17 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+
+int cowpage(uint64 va){
+   pte_t *pte;
+    struct proc *p = myproc();
+
+    return va < p->sz // 在进程内存范围内
+      && ((pte = walk(p->pagetable, va, 0))!=0)
+      && (*pte & PTE_V) // 页表项存在
+      && (*pte & PTE_COW); // 页是一个懒复制页
+}
+
 void
 usertrap(void)
 {
@@ -68,10 +79,19 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+  uint64 cause = r_scause();
+            if ((cause == 13 ||cause == 15)&&cowpage(r_stval())){
+              uint64 va = r_stval();
+              handlecow(p,va);
+            }else{
+            printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+                      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+                      p->killed = 1;
+            }
+
   }
+
+
 
   if(p->killed)
     exit(-1);
@@ -81,6 +101,35 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
+
+
+
+void handlecow(struct proc * p, uint64 va){
+    //printf("handler\n");
+ pte_t *pte;
+      uint64 pa;
+    pte = walk(p->pagetable, va, 0);
+    if (pte !=0){
+    pa = PTE2PA(*pte);
+        if (*pte & PTE_COW){
+            void* mem = kalloc();
+            if (mem == 0){
+              p->killed = 1;
+            }else{
+            memmove(mem, (char*)pa, PGSIZE);
+//uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+//            *pte = PA2PTE(mem) | flags;
+            uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+              uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0);
+              if(mappages(p->pagetable, va, 1,(uint64) mem, flags) == -1) {
+                panic("uvmcowcopy: mappages");
+              }
+            kfree((void*)pa);
+            }
+
+        }
+    }
 }
 
 //

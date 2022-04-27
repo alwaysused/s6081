@@ -185,3 +185,9 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+void addCount(void *pa);
+void handlecow(struct proc * p, uint64 va);
+pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc);
+int cowpage(uint64 va);
+
