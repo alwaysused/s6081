@@ -2,8 +2,9 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="2593e4ec-03f1-41a6-a492-9e19ab6228aa" name="Default Changelist" comment="">
-      <change beforePath="$PROJECT_DIR$/kernel/kalloc.c" beforeDir="false" afterPath="$PROJECT_DIR$/kernel/kalloc.c" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/user/kalloctest.c" beforeDir="false" afterPath="$PROJECT_DIR$/user/kalloctest.c" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/kernel/bio.c" beforeDir="false" afterPath="$PROJECT_DIR$/kernel/bio.c" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/kernel/buf.h" beforeDir="false" afterPath="$PROJECT_DIR$/kernel/buf.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
