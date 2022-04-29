@@ -30,20 +30,16 @@ barrier()
   // Block until all threads have called barrier() and
   // then increment bstate.round.
   //
-    printf("try to acquire\n");
 
   pthread_mutex_lock(&bstate.barrier_mutex);
-  printf("acquired\n");
   bstate.nthread ++;
   if (bstate.nthread == nthread){
     bstate.nthread = 0;
     bstate.round += 1;
-    printf("release here\n");
     pthread_cond_broadcast(&bstate.barrier_cond);
 
 
   }else{
-      printf("release wait\n");
 
     pthread_cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
   }
@@ -61,7 +57,6 @@ thread(void *xa)
   for (i = 0; i < 20000; i++) {
     int t = bstate.round;
     assert (i == t);
-    printf("round %d\n", t);
     barrier();
     usleep(random() % 100);
   }
